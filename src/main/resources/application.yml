@@ -1,0 +1,180 @@
+spring:
+  # 本地敏感配置（API Key / 数据库密码）放在项目根目录的 application-local.yml 里，
+  # 该文件已被 .gitignore 排除，不会进仓库。没有这个文件也能启动（optional）。
+  config:
+    import: optional:file:./application-local.yml
+
+  ai:
+    # ⭐ 模型选择：embedding 只启用 openai 兼容通道（硅基流动），智谱 embedding 自动禁用；
+    # 不设置 spring.ai.model.chat，智谱 + DeepSeek 两个聊天模型同时保留
+    model:
+      embedding: openai
+
+    # 智谱 AI
+    zhipuai:
+      api-key: ${ZHIPU_API_KEY:}
+      base-url: https://open.bigmodel.cn/api/paas   # 注意：不带 /v4，ZhiPuAiApi 内部会拼 /v4/chat/completions
+      chat:
+        options:
+          model: glm-4.7-flash
+
+    # DeepSeek（聊天）+ 硅基流动（embedding），共用 openai 兼容接口
+    openai:
+      base-url: https://api.deepseek.com          # 顶层配置供聊天使用
+      api-key: ${DEEPSEEK_API_KEY:}
+      chat:
+        options:
+          model: deepseek-chat
+      embedding:                                   # ⭐ embedding 单独指向硅基流动（免费）
+        base-url: https://api.siliconflow.cn        # 注意：不带 /v1，OpenAiApi 会自动拼上 /v1/embeddings
+        api-key: ${SILICONFLOW_API_KEY:}
+        options:
+          model: BAAI/bge-m3
+
+    # ⭐ 向量库：type=redis，使用 WSL2 本地 Redis Stack（自带 RediSearch）
+    vectorstore:
+      type: redis
+      redis:
+        initialize-schema: true
+        index-name: emergency_knowledge_index
+        prefix: "embedding:"
+
+  # MySQL 数据源
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://127.0.0.1:3306/emergency_db?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+    username: root
+    password: ${MYSQL_PASSWORD:root}
+
+  # Redis 连接（WSL2 本地 Redis Stack，默认无密码、无 TLS）
+  data:
+    redis:
+      # 显式写成 IPv4 字面量：mirrored 模式下 localhost 可能优先解析到 ::1，
+      # 而 WSL 里的 Redis 只监听 IPv4（bind 0.0.0.0），会导致
+      # Jedis 报 "Failed to connect to any host resolved for DNS name."
+      host: 127.0.0.1
+      port: 6379
+
+# ==========================================================================
+#  LLM 接入层（com.syx.demo.llm）配置 —— 单入口，改配置不用改代码
+#  模型清单是配置驱动的：新增院内私有化模型只需在 models 下加一段，
+#  缺 api-key / 缺 base-url 的条目会在注册阶段被跳过并在启动日志里说明原因。
+# ==========================================================================
+app:
+  llm:
+    # 缺省模型：路由找不到更合适候选时兜底
+    default-model: deepseek-chat
+
+    # ---------------- 模型清单 ----------------
+    models:
+      # 主模型：常规问答（LlmProperties.ModelDef）
+      deepseek-chat:
+        display-name: DeepSeek Chat（主模型）
+        provider: OPENAI_COMPATIBLE
+        base-url: ${spring.ai.openai.base-url}
+        api-key: ${spring.ai.openai.api-key}
+        model: ${spring.ai.openai.chat.options.model}
+        capability: GENERAL
+        priority: 10
+        read-timeout-seconds: 30
+        remark: 常规问答主通道
+
+      # 推理模型：复杂推理 / 急诊分诊走它
+      deepseek-reasoner:
+        display-name: DeepSeek Reasoner（推理模型）
+        provider: OPENAI_COMPATIBLE
+        base-url: ${spring.ai.openai.base-url}
+        api-key: ${spring.ai.openai.api-key}
+        model: deepseek-reasoner
+        capability: REASONING
+        priority: 20
+        read-timeout-seconds: 60        # 推理模型本来就慢，超时给宽一点
+        remark: 复杂推理类问题优先使用
+
+      # 备用模型：DeepSeek 超时/限流时自动切到它
+      glm:
+        display-name: 智谱 GLM（备用）
+        provider: ZHIPU
+        base-url: ${spring.ai.zhipuai.base-url}
+        api-key: ${spring.ai.zhipuai.api-key}
+        model: ${spring.ai.zhipuai.chat.options.model}
+        capability: GENERAL
+        priority: 30
+        read-timeout-seconds: 30
+        remark: 主备降级链的备选通道
+
+      # 院内私有化模型占位：填上环境变量即自动生效，不用改代码
+      #   启动前设置：MEDICAL_QWEN_BASE_URL / MEDICAL_QWEN_API_KEY
+      qwen-med:
+        display-name: 院内私有化 Qwen（占位）
+        provider: OPENAI_COMPATIBLE
+        base-url: ${MEDICAL_QWEN_BASE_URL:}
+        api-key: ${MEDICAL_QWEN_API_KEY:}
+        model: qwen2.5-72b-instruct
+        capability: REASONING
+        priority: 5                 # 优先级最高：私有化部署更合规，能用就先用它
+        read-timeout-seconds: 60
+        remark: 院内 vLLM 部署，未配置时自动跳过
+
+    # ---------------- 主备降级链 ----------------
+    # 每个模型挂掉后按顺序尝试后面这些；未配置的会自动追加 default-model 兜底
+    fallback:
+      deepseek-reasoner:
+        - deepseek-chat
+        - glm
+      deepseek-chat:
+        - glm
+      glm:
+        - deepseek-chat
+      qwen-med:
+        - deepseek-reasoner
+        - glm
+
+    # ---------------- 能力路由 ----------------
+    routing:
+      enabled: true
+      reasoning-model: deepseek-reasoner    # 推理密集问题优先
+      general-model: deepseek-chat          # 常规问答
+      fast-model: ""                        # 留空表示不启用轻量通道
+      reasoning-length-threshold: 80        # 超过这个字数视为推理密集
+
+    # ---------------- 熔断降级（Sentinel） ----------------
+    breaker:
+      backend: auto                 # auto=有 Sentinel 就用；也可强制 sentinel / simple
+      failure-rate-threshold: 0.5   # 坏调用比例超 50% 打开熔断
+      min-request-amount: 5         # 样本不足 5 次不触发
+      stat-interval-ms: 10000       # 统计窗口 10s
+      time-window-seconds: 20       # 熔断后静默 20s 再半开探测
+      slow-call-rt-ms: 15000        # 超过 15s 视为慢调用（等同于失败）
+
+    # ---------------- 重试（重试耗尽才降级） ----------------
+    retry:
+      max-attempts: 2               # 单模型最多试 2 次；1 表示不重试直接降级
+      backoff-ms: 300
+
+    # ---------------- 多轮会话（Redis） ----------------
+    session:
+      ttl-minutes: 120
+      history-turns: 10             # 送入模型的最近轮数
+      max-stored-messages: 40       # Redis 中保留的消息条数上限
+      key-prefix: "app:llm:"
+
+    # ---------------- RAG 检索 ----------------
+    rag:
+      top-k: 4
+      similarity-threshold: 0.5
+      max-snippet-chars: 700        # 单条片段注入 Prompt 的最大长度
+
+    # ---------------- 数据域隔离 ----------------
+    domain:
+      # 生产环境务必保持 false：患者隐私数据域必须由接口显式授权
+      allow-patient-by-default: false
+      public-domain-key: PUBLIC
+      patient-domain-key: PATIENT
+      domain-field: domain
+      tenant-field: tenantId
+      patient-field: patientId
+      # 从问题里识别「显式点名的患者标识」。识别到之后检索会收敛到该标识，
+      # 若该患者不属于当前 tenantId，就确定性拒答（而不是让模型自己判断"资料里没这个人"）。
+      # 该正则不会误伤 HOSP-A 这类院区标识（字母段后必须跟数字）。
+      patient-id-pattern: '(?<![A-Za-z0-9])[A-Za-z]{1,4}-[0-9]{2,}(?![0-9])'

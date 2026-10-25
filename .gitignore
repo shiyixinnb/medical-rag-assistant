@@ -1,0 +1,52 @@
+HELP.md
+target/
+.mvn/wrapper/maven-wrapper.jar
+!**/src/main/**/target/
+!**/src/test/**/target/
+
+### STS ###
+.apt_generated
+.classpath
+.factorypath
+.project
+.settings
+.springBeans
+.sts4-cache
+
+### IntelliJ IDEA ###
+.idea
+*.iws
+*.iml
+*.ipr
+
+### NetBeans ###
+/nbproject/private/
+/nbbuild/
+/dist/
+/nbdist/
+/.nb-gradle/
+build/
+!**/src/main/**/build/
+!**/src/test/**/build/
+
+### VS Code ###
+.vscode/
+
+### 本地敏感配置（API Key / 数据库密码）###
+application-local.yml
+.env
+*.env
+
+### 个人资料（不进仓库）###
+.workbuddy/
+docs/resume-project.md
+
+### 前端依赖与构建产物 ###
+web/node_modules/
+web/dist/
+dev.log
+*.log
+
+### 其它 ###
+.DS_Store
+target/scratch/

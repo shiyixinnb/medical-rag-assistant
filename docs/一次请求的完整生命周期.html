@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>一次请求的完整生命周期 · 源码导读</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    height: 100%; background: #E9EBEF; overflow: hidden;
+    font-family: "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
+    color: #1F2328;
+  }
+  #viewport { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; }
+  #stage {
+    width: 1280px; height: 720px; background: #FFFFFF;
+    position: relative; overflow: hidden; transform-origin: center center;
+    box-shadow: 0 8px 40px rgba(0,0,0,.12);
+  }
+  .slide {
+    position: absolute; inset: 0; padding: 72px 88px;
+    display: none; flex-direction: column; justify-content: center;
+  }
+  .slide.active { display: flex; }
+  .kicker {
+    font-size: 16px; letter-spacing: .18em; color: #185FA5;
+    text-transform: uppercase; margin-bottom: 18px; font-weight: 500;
+  }
+  h1 { font-size: 58px; line-height: 1.2; font-weight: 500; letter-spacing: -.5px; }
+  h2 { font-size: 46px; line-height: 1.25; font-weight: 500; margin-bottom: 34px; }
+  .sub { font-size: 22px; color: #5F5E5A; margin-top: 22px; line-height: 1.7; }
+  .meta { font-size: 17px; color: #888780; margin-top: 40px; }
+  ul { list-style: none; }
+  li {
+    font-size: 26px; line-height: 1.55; margin-bottom: 18px;
+    padding-left: 34px; position: relative; color: #1F2328;
+  }
+  li::before {
+    content: ""; position: absolute; left: 6px; top: 15px;
+    width: 9px; height: 9px; border-radius: 50%; background: #185FA5;
+  }
+  li code, .mono { font-family: "Cascadia Mono", Consolas, monospace; font-size: .92em; color: #0C447C; }
+  .note {
+    margin-top: 26px; padding: 20px 24px; background: #E6F1FB;
+    border-left: 4px solid #185FA5; font-size: 19px; line-height: 1.65; color: #0C447C;
+  }
+  .note.warn { background: #FCEBEB; border-left-color: #E24B4A; color: #A32D2D; }
+  .row { display: flex; gap: 18px; margin-bottom: 18px; }
+  .card {
+    flex: 1; background: #F7F8FA; border: 1px solid #E4E6EB; border-radius: 12px;
+    padding: 20px 22px;
+  }
+  .card .t { font-size: 20px; font-weight: 500; color: #042C53; margin-bottom: 8px; }
+  .card .d { font-size: 16px; color: #5F5E5A; line-height: 1.6; }
+  .big { font-size: 30px; line-height: 1.6; color: #042C53; }
+  .dim { color: #888780; }
+
+  /* 字幕与控制条 */
+  #caption {
+    position: absolute; left: 88px; right: 88px; bottom: 62px;
+    font-size: 21px; line-height: 1.6; color: #444441; min-height: 34px;
+    transition: opacity .25s;
+  }
+  #bar { position: absolute; left: 0; right: 0; bottom: 0; height: 4px; background: #EDEEF1; }
+  #fill { height: 100%; width: 0; background: #185FA5; transition: width .2s linear; }
+  #hud {
+    position: absolute; right: 88px; top: 34px; font-size: 15px;
+    color: #888780; letter-spacing: .06em;
+  }
+  #controls {
+    position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%);
+    display: flex; gap: 10px; align-items: center;
+    background: rgba(255,255,255,.94); border: 1px solid #D3D1C7;
+    border-radius: 999px; padding: 8px 14px; font-size: 13px; color: #5F5E5A;
+    box-shadow: 0 4px 18px rgba(0,0,0,.08); z-index: 10;
+  }
+  #controls button {
+    border: none; background: #EDEEF1; color: #2C2C2A; border-radius: 999px;
+    padding: 7px 14px; font-size: 13px; cursor: pointer; font-family: inherit;
+  }
+  #controls button:hover { background: #E1E3E7; }
+  #controls .hint { padding: 0 8px; color: #888780; }
+  #start {
+    position: absolute; inset: 0; z-index: 5; background: rgba(255,255,255,.94);
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 18px; transition: opacity .3s;
+  }
+  #start.hidden { opacity: 0; pointer-events: none; }
+  #start button {
+    font-family: inherit; font-size: 22px; padding: 18px 46px; border: none;
+    border-radius: 999px; background: #185FA5; color: #fff; cursor: pointer;
+  }
+  #start button:hover { background: #0C447C; }
+  #start .tip { font-size: 15px; color: #888780; }
+</style>
+</head>
+<body>
+<div id="viewport">
+  <div id="stage">
+    <div id="hud"></div>
+
+    <section class="slide">
+      <div class="kicker">医疗 RAG 问答系统 · 源码导读</div>
+      <h1>一次请求的<br>完整生命周期</h1>
+      <div class="sub">从 HTTP 进门，到变成一句能引用的回答。<br>8 个文件夹、10 个类、14 步调用。</div>
+      <div class="meta">按空格暂停 / 继续　·　← → 切换章节</div>
+    </section>
+
+    <section class="slide">
+      <div class="kicker">01 全景</div>
+      <h2>整条链路只有四段</h2>
+      <div class="row">
+        <div class="card"><div class="t">① 接入</div><div class="d">Controller 把 JSON 变成对象，然后交出去</div></div>
+        <div class="card"><div class="t">② 准备</div><div class="d">prepare 里做完全部判断，安全边界都在这</div></div>
+      </div>
+      <div class="row">
+        <div class="card"><div class="t">③ 调用</div><div class="d">ChatFacade 选模型、熔断、重试、降级</div></div>
+        <div class="card"><div class="t">④ 收尾</div><div class="d">buildAnswer 把自由文本变成结构化对象</div></div>
+      </div>
+      <div class="note">三条分支会在 ③ 之前提前返回：澄清、未授权、查无患者资料。</div>
+    </section>
+
+    <section class="slide">
+      <div class="kicker">02 准备</div>
+      <h2>prepare 里的七个判断</h2>
+      <ul>
+        <li>载入会话 —— 拿到历史、租户、授权</li>
+        <li>判意图 —— 这一问是常识，还是问具体病人</li>
+        <li>要不要先澄清 —— 太短的问题先追问</li>
+        <li>数据域授权 —— 没有 tenantId 直接拒答</li>
+        <li>患者收敛 → 检索 → 拼 Prompt</li>
+      </ul>
+      <div class="note">所有安全判断都在调模型之前完成。模型是整条链路里最贵、最不可控的一环。</div>
+    </section>
+
+    <section class="slide">
+      <div class="kicker">03 检索</div>
+      <h2>三道闸门，一道比一道紧</h2>
+      <div class="row">
+        <div class="card"><div class="t">① 物理隔离</div><div class="d">没授权的域，对应的向量库根本不调用</div></div>
+        <div class="card"><div class="t">② 索引过滤</div><div class="d">查询里带 domain 与 tenantId 条件</div></div>
+        <div class="card"><div class="t">③ Java 复核</div><div class="d">返回后再逐条核对租户，不对就丢弃</div></div>
+      </div>
+      <div class="note warn">坑：HOSP-A 里的连字符会被 RediSearch 当分隔符，过滤整条失效，必须先转义成 HOSP\-A。</div>
+    </section>
+
+    <section class="slide">
+      <div class="kicker">04 调用</div>
+      <h2>模型调用被包了四层</h2>
+      <ul>
+        <li><code>call()</code> —— 在候选链上换模型，负责降级</li>
+        <li><code>invokeWithRetry()</code> —— 同一个模型重试，只对 429 / 5xx / 超时</li>
+        <li><code>guard.execute()</code> —— 熔断的进入、上报、退出</li>
+        <li><code>invokeOnce()</code> —— 真正发 HTTP，一行容错都没有</li>
+      </ul>
+      <div class="note">每层只负责一件事，所以出问题能精确定位：是重试策略、熔断误开，还是模型真挂了。</div>
+    </section>
+
+    <section class="slide">
+      <div class="kicker">05 收尾</div>
+      <h2>拿到文本之后还有四件事</h2>
+      <ul>
+        <li>剥掉 <code>[META]</code> 行 —— 那是给程序看的</li>
+        <li>校验引用编号 —— 引用了不存在的 [5] 就是幻觉</li>
+        <li>补齐免责声明 —— 不依赖模型是否照做</li>
+        <li>写回会话 —— 下一轮追问才有上下文</li>
+      </ul>
+      <div class="note">同步和流式共用同一个 buildAnswer，所以两条路径的输出契约永远一致。</div>
+    </section>
+
+    <section class="slide">
+      <div class="kicker">06 记住这三句</div>
+      <h2>这个系统的设计原则</h2>
+      <div class="big">Controller 只做转换。<br>Service 只定顺序。<br>能在外围判断的，不交给模型。</div>
+      <div class="note">下一步：在 <code>prepare</code>、<code>retrieve</code>、<code>call</code>、<code>buildAnswer</code> 各打一个断点，跑一遍。</div>
+    </section>
+
+    <div id="start">
+      <button id="startBtn">▶ 开始播放</button>
+      <div class="tip">建议全屏观看　·　空格暂停　·　← → 翻页</div>
+    </div>
+
+    <div id="caption"></div>
+    <div id="bar"><div id="fill"></div></div>
+  </div>
+</div>
+
+<div id="controls">
+  <button id="play">播放</button>
+  <button id="prev">上一页</button>
+  <button id="next">下一页</button>
+  <button id="voice">朗读：开</button>
+  <button id="fs">全屏</button>
+  <span class="hint">空格 / ← →</span>
+</div>
+
+<script>
+const NARRATION = [
+  "这个视频用一条真实的请求，把整个项目的调用链走一遍。看完你应该能说出四件事：请求从哪个类进来，中间做了哪些判断，在哪里真正调用模型，最后怎么变成一句带引用的回答。",
+  "整条链路可以切成四段。接入、准备、调用、收尾。前两段全是判断，第三段才是真正和模型打交道，最后一段负责把模型的自由文本变成结构化对象。三条分支会提前结束：要澄清、没授权、查不到患者资料。",
+  "准备阶段是整条链路最关键的九十行。先载入会话，拿到上一轮问了什么、这个租户是谁、有没有授权患者数据。再判意图，决定这一问要不要碰隐私数据。然后看要不要澄清，再做授权判定，最后收敛患者、检索资料、拼出提示词。注意顺序：所有安全判断都在调模型之前。",
+  "检索有三道闸门。第一道是物理隔离，没授权的数据域，对应的向量库根本不会被调用。第二道是索引过滤，查询里带上租户和患者条件。第三道是 Java 复核，结果回来以后逐条再核对一次租户。这里有一个真实的坑：HOSP-A 里的连字符会被 RediSearch 当成分隔符，过滤会整条失效，所以必须先转义。",
+  "模型调用被包了四层。最外层在候选链上换模型，负责降级。第二层在同一个模型上重试，只对限流、服务端错误和超时重试。第三层是熔断，负责记录成败和切换状态。最里面那层才真正发 HTTP 请求，它里面一行容错代码都没有。",
+  "模型把答案返回之后，还有四件事要做。剥掉那行给程序看的 META 信息，校验它引用的编号是不是真的存在，补上系统自己的免责声明，最后把这一轮写回 Redis。同步和流式共用同一个收尾方法，所以两条路径的输出永远一致。",
+  "最后记住三句话：Controller 只做转换，Service 只定顺序，能在外围判断的事情不要交给模型。下一步建议你在这四个方法上各打一个断点，跑一遍，比看十遍代码都管用。"
+];
+
+const slides = Array.from(document.querySelectorAll('.slide'));
+const caption = document.getElementById('caption');
+const fill = document.getElementById('fill');
+const hud = document.getElementById('hud');
+const playBtn = document.getElementById('play');
+const voiceBtn = document.getElementById('voice');
+
+let idx = 0, playing = false, talking = false, voiceOn = true;
+let timer = null, startAt = 0, duration = 0, elapsedBase = 0;
+
+const synth = window.speechSynthesis || null;
+let zhVoice = null;
+function pickVoice() {
+  if (!synth) return;
+  const vs = synth.getVoices();
+  zhVoice = vs.find(v => /zh[-_]CN/i.test(v.lang)) || vs.find(v => /^zh/i.test(v.lang)) || null;
+}
+pickVoice();
+if (synth) synth.onvoiceschanged = pickVoice;
+
+function fit() {
+  const s = Math.min(window.innerWidth / 1280, window.innerHeight / 720);
+  document.getElementById('stage').style.transform = 'scale(' + s + ')';
+}
+window.addEventListener('resize', fit);
+fit();
+
+function estDuration(text) {
+  return Math.max(7000, text.length * 240);
+}
+
+function render(i) {
+  slides.forEach((s, k) => s.classList.toggle('active', k === i));
+  caption.textContent = NARRATION[i] || '';
+  hud.textContent = String(i + 1).padStart(2, '0') + ' / ' + String(slides.length).padStart(2, '0');
+}
+
+function speak(text, onDone) {
+  if (!synth || !voiceOn) { onDone(false); return; }
+  synth.cancel();
+  const u = new SpeechSynthesisUtterance(text);
+  u.lang = 'zh-CN';
+  if (zhVoice) u.voice = zhVoice;
+  u.rate = 1.0;
+  u.onend = () => onDone(true);
+  u.onerror = () => onDone(false);
+  talking = true;
+  synth.speak(u);
+  setTimeout(() => { if (talking && !synth.speaking) { talking = false; onDone(false); } }, 1200);
+}
+
+function startSlide() {
+  clearTimeout(timer);
+  const text = NARRATION[idx] || '';
+  duration = estDuration(text);
+  startAt = performance.now();
+
+  // 兜底计时器：无论有没有语音，都保证这一页会往前走。
+  // 有语音时给 1.6 倍余量，避免朗读还没结束就被切页。
+  timer = setTimeout(next, (synth && voiceOn) ? duration * 1.6 : duration);
+
+  if (synth && voiceOn) {
+    speak(text, (ok) => {
+      if (!ok) return;                 // 朗读失败就交给兜底计时器
+      clearTimeout(timer);
+      timer = setTimeout(next, 600);   // 正常读完，停顿一下再切页
+    });
+  }
+  tick();
+}
+
+function tick() {
+  if (!playing) return;
+  const p = Math.min(1, (performance.now() - startAt) / duration);
+  fill.style.width = (p * 100) + '%';
+  requestAnimationFrame(tick);
+}
+
+function next() {
+  if (idx < slides.length - 1) { idx++; render(idx); if (playing) startSlide(); }
+  else { playing = false; playBtn.textContent = '重播'; fill.style.width = '100%'; }
+}
+
+function prev() {
+  if (idx > 0) { idx--; render(idx); if (playing) startSlide(); }
+}
+
+function resume() {
+  playing = true;
+  playBtn.textContent = '暂停';
+  const s = document.getElementById('start');
+  if (s) s.classList.add('hidden');
+  startSlide();   // 从当前页重新开始朗读（简单可靠，不做中途续读）
+}
+
+function pause() {
+  playing = false;
+  playBtn.textContent = '播放';
+  clearTimeout(timer);
+  if (synth) synth.cancel();
+  talking = false;
+}
+
+playBtn.onclick = () => {
+  if (!playing) {
+    if (idx === slides.length - 1 && fill.style.width === '100%') { idx = 0; render(0); }
+    resume();
+  } else pause();
+};
+
+voiceBtn.onclick = () => {
+  voiceOn = !voiceOn;
+  voiceBtn.textContent = '朗读：' + (voiceOn ? '开' : '关');
+  if (!voiceOn && synth) synth.cancel();
+  if (playing) startSlide();
+};
+
+document.getElementById('next').onclick = () => { clearTimeout(timer); if (synth) synth.cancel(); next(); if (playing) startSlide(); };
+document.getElementById('prev').onclick = () => { clearTimeout(timer); if (synth) synth.cancel(); prev(); if (playing) startSlide(); };
+
+window.addEventListener('keydown', e => {
+  if (e.code === 'Space') { e.preventDefault(); playBtn.click(); }
+  if (e.code === 'ArrowRight') document.getElementById('next').click();
+  if (e.code === 'ArrowLeft') document.getElementById('prev').click();
+});
+
+render(0);
+
+// 必须有一次点击才能可靠地播放语音（浏览器自动播放策略），所以先显示开始遮罩。
+document.getElementById('startBtn').onclick = () => {
+  document.getElementById('start').classList.add('hidden');
+  playing = true;
+  playBtn.textContent = '暂停';
+  startSlide();
+};
+
+document.getElementById('fs').onclick = () => {
+  if (document.fullscreenElement) document.exitFullscreen();
+  else document.documentElement.requestFullscreen();
+};
+</script>
+</body>
+</html>

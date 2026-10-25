@@ -1,0 +1,16 @@
+{
+  "properties": [
+    {
+      "name": "spring.ai.model.chat",
+      "type": "java.lang.String",
+      "description": "Chat model provider to enable (openai, zhipuai, ollama, ...). Consumed by @ConditionalOnProperty, hence declared manually.",
+      "defaultValue": "openai"
+    },
+    {
+      "name": "spring.ai.model.embedding",
+      "type": "java.lang.String",
+      "description": "Embedding model provider to enable (openai, zhipuai, ollama, transformers, none). Consumed by @ConditionalOnProperty, hence declared manually.",
+      "defaultValue": "openai"
+    }
+  ]
+}
